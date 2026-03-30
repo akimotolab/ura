@@ -1,0 +1,11 @@
+[project]
+name = "ura"
+version = "0.1.0"
+description = "Upper-Level Ranking Approximation CMA-ES (URA-CMA-ES)"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.4.4",
+    "pandas>=3.0.1",
+    "scipy>=1.17.1",
+]
