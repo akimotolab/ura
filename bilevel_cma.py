@@ -273,7 +273,7 @@ class BilevelCMA:
                 D_y_tilde[i],
                 self.lambda_y,
                 flg_variance_update=self.variance_update_y,
-                beta_eig=10 * self.dim_y**2,
+                beta_eig=10 * self.dim_y,
                 random_seed=self.rng.integers(999999),
             )
             for i in range(self.lambda_x)
@@ -343,6 +343,11 @@ class BilevelCMA:
                         c += 1
 
                     lower_cma.update(np.argsort(fy), urax, uray, uraz)
+                    # ddcma.py only advances .t inside onestep(), which this
+                    # sample()/update() loop bypasses; advance it ourselves so the
+                    # lazy-eigendecomposition schedule (teig, set from beta_eig at
+                    # construction) actually engages instead of decomposing every step.
+                    lower_cma.t += 1
                     cma_iter_count[i] += 1
 
                     # numerical stability
