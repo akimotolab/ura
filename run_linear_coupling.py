@@ -1,6 +1,6 @@
+import argparse
 import inspect
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -10,7 +10,6 @@ from bilevel_cma import BilevelCMA, BilevelCMAGrad, BilevelCMALBFGS, MyDdCma, mi
 DIM_X = 10
 DIM_Y_LIST = [10, 30, 100, 300, 1000]
 N_TRIALS = 20
-N_WORKERS = None
 BOUND = 5.0
 
 GAP_TOL = 1e-6
@@ -69,29 +68,29 @@ configs = [
 ]
 
 
-def save_csv(trial_results: dict, dim_x: int, dim_y: int) -> None:
-    for prob_label, method_dict in trial_results.items():
-        for method, traces_list in method_dict.items():
-            dfs = []
-            for trial_idx, traces in enumerate(traces_list):
-                iters, total_calls, fvals, upper_calls, lower_calls = traces
-                dfs.append(
-                    pd.DataFrame(
-                        {
-                            "trial": trial_idx,
-                            "iteration": iters,
-                            "upper_calls": upper_calls,
-                            "lower_calls": lower_calls,
-                            "total_calls": total_calls,
-                            "f_upper_min": fvals,
-                        }
-                    )
-                )
+def save_csv(trial_traces: dict, dim_x: int, dim_y: int, trial_idx: int) -> None:
+    """Save one trial's traces. Filename carries the trial index so that
+    parallel invocations (one per trial, launched from the shell script)
+    never write the same path."""
+    for prob_label, method_dict in trial_traces.items():
+        for method, traces in method_dict.items():
+            iters, total_calls, fvals, upper_calls, lower_calls = traces
+            df = pd.DataFrame(
+                {
+                    "trial": trial_idx,
+                    "iteration": iters,
+                    "upper_calls": upper_calls,
+                    "lower_calls": lower_calls,
+                    "total_calls": total_calls,
+                    "f_upper_min": fvals,
+                }
+            )
             safe_method = method.replace(" ", "_").replace("(", "").replace(")", "")
             path = os.path.join(
-                DATA_DIR, f"x{dim_x}_y{dim_y}_{prob_label}_{safe_method}.csv"
+                DATA_DIR,
+                f"x{dim_x}_y{dim_y}_{prob_label}_{safe_method}_trial{trial_idx:02d}.csv",
             )
-            pd.concat(dfs, ignore_index=True).to_csv(path, index=False)
+            df.to_csv(path, index=False)
             print(f"saved {path}")
 
 
@@ -293,38 +292,32 @@ def run_single_trial(
     return trial_traces
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run one trial (all methods) for one dim_y. "
+        "Launch multiple copies (see run_linear_coupling.sh) to parallelize "
+        "across trials/dim_y instead of parallelizing inside this script."
+    )
+    parser.add_argument("--dim-y", type=int, required=True, choices=DIM_Y_LIST)
+    parser.add_argument("--trial", type=int, required=True)
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    for DIM_Y in DIM_Y_LIST:
-        print(f"\n{'#' * 60}")
-        print(f"# DIM_Y = {DIM_Y}  (N = {DIM_X + DIM_Y})  --  {N_TRIALS} trials")
-        print(f"{'#' * 60}")
+    args = parse_args()
+    DIM_Y = args.dim_y
+    trial_idx = args.trial
 
-        # Fixed randomness: objective function geometry
-        rng = np.random.default_rng(42)
-        _Q_C, _ = np.linalg.qr(rng.standard_normal((DIM_Y, DIM_X)))
-        C_mat = _Q_C
+    print(f"[dim_y={DIM_Y} trial={trial_idx}] starting")
 
-        _Q_R, _R_R = np.linalg.qr(rng.standard_normal((DIM_Y, DIM_Y)))
-        R_inner = _Q_R * np.sign(np.diag(_R_R))
+    # Fixed randomness: objective function geometry (depends only on DIM_Y,
+    # so every trial/process for a given DIM_Y reconstructs the same problem).
+    rng = np.random.default_rng(42)
+    _Q_C, _ = np.linalg.qr(rng.standard_normal((DIM_Y, DIM_X)))
+    C_mat = _Q_C
 
-        method_labels = [cfg["label"] for cfg in configs] + [
-            "CMA-ES (black-box)",
-            "L-BFGS (white-box)",
-        ]
-        prob_labels = ["qcoupling_cond1", "qcoupling_cond1e4"]
-        trial_results: dict[str, dict[str, list]] = {
-            pl: {ml: [] for ml in method_labels} for pl in prob_labels
-        }
+    _Q_R, _R_R = np.linalg.qr(rng.standard_normal((DIM_Y, DIM_Y)))
+    R_inner = _Q_R * np.sign(np.diag(_R_R))
 
-        with ProcessPoolExecutor(max_workers=N_WORKERS) as executor:
-            futures = {
-                executor.submit(run_single_trial, t, DIM_Y, C_mat, R_inner): t
-                for t in range(N_TRIALS)
-            }
-            for future in as_completed(futures):
-                trial_traces = future.result()
-                for prob_label, method_dict in trial_traces.items():
-                    for method, traces in method_dict.items():
-                        trial_results[prob_label][method].append(traces)
-
-        save_csv(trial_results, DIM_X, DIM_Y)
+    trial_traces = run_single_trial(trial_idx, DIM_Y, C_mat, R_inner)
+    save_csv(trial_traces, DIM_X, DIM_Y, trial_idx)

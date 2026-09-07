@@ -1,5 +1,6 @@
 """Regenerate convergence plots from saved CSV data in results_data/."""
 
+import glob
 import os
 
 import matplotlib.pyplot as plt
@@ -137,14 +138,24 @@ for DIM_Y in DIM_Y_LIST:
     for prob_label in plot_order:
         trial_results[prob_label] = {}
         for safe_method, label in SAFE_TO_LABEL.items():
-            path = os.path.join(
-                DATA_DIR, f"x{DIM_X}_y{DIM_Y}_{prob_label}_{safe_method}.csv"
+            # Current runs write one file per trial (run_linear_coupling.sh
+            # launches one process per trial); fall back to the older
+            # single combined-file layout if no per-trial files exist.
+            pattern = os.path.join(
+                DATA_DIR, f"x{DIM_X}_y{DIM_Y}_{prob_label}_{safe_method}_trial*.csv"
             )
-            if not os.path.exists(path):
-                missing.append(path)
+            paths = sorted(glob.glob(pattern))
+            if not paths:
+                legacy_path = os.path.join(
+                    DATA_DIR, f"x{DIM_X}_y{DIM_Y}_{prob_label}_{safe_method}.csv"
+                )
+                if os.path.exists(legacy_path):
+                    paths = [legacy_path]
+            if not paths:
+                missing.append(pattern)
                 continue
 
-            df = pd.read_csv(path)
+            df = pd.concat((pd.read_csv(p) for p in paths), ignore_index=True)
 
             # Group by trial; each group becomes one entry in traces_list.
             # CSVs from single-trial runs have no "trial" column — treat as trial 0.
