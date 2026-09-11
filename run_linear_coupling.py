@@ -259,7 +259,7 @@ def run_single_trial(
             lr=1.0,
             history_size=10,
             line_search_fn="strong_wolfe",
-            max_iter=1,
+            max_iter=20,
         )
 
         fcall_counter = [0]
