@@ -67,6 +67,9 @@ configs = [
     {"label": "URA-CMA-ES", "cls": BilevelCMA, "extra": {}},
 ]
 
+BASELINE_METHODS = ["CMA-ES (black-box)", "L-BFGS (white-box)"]
+ALL_METHODS = [cfg["label"] for cfg in configs] + BASELINE_METHODS
+
 
 def save_csv(trial_traces: dict, dim_x: int, dim_y: int, trial_idx: int) -> None:
     """Save one trial's traces. Filename carries the trial index so that
@@ -99,8 +102,17 @@ def run_single_trial(
     dim_y: int,
     C_mat: np.ndarray,
     R_inner: np.ndarray,
+    methods: list[str] | None = None,
 ) -> dict:
-    """Run all methods for one trial. Returns {prob_label: {method: traces}}."""
+    """Run the selected methods for one trial. Returns {prob_label: {method: traces}}.
+
+    `methods` restricts which of ALL_METHODS are run; None (the default) runs
+    all of them.
+    """
+    if methods is None:
+        methods = ALL_METHODS
+    methods = set(methods)
+
     n = DIM_X + dim_y
     xb = np.array([[-BOUND] * DIM_X, [BOUND] * DIM_X])
     yb = np.array([[-BOUND] * dim_y, [BOUND] * dim_y])
@@ -111,14 +123,12 @@ def run_single_trial(
         ("qcoupling_cond1e4", *make_quadratic_coupling(1e4, dim_y, C_mat, R_inner)),
     ]
 
-    method_labels = [cfg["label"] for cfg in configs] + [
-        "CMA-ES (black-box)",
-        "L-BFGS (white-box)",
-    ]
     trial_traces: dict[str, dict[str, tuple]] = {pl: {} for pl, *_ in problems}
 
     for prob_label, f_upper, _, df_lower, __ in problems:
         for cfg in configs:
+            if cfg["label"] not in methods:
+                continue
             # BilevelCMA (fully black-box) has no single_objective flag; passing
             # f_lower=f_upper directly reproduces the same "minimize, don't play
             # minimax" semantics that single_objective=True gives the other solvers.
@@ -168,6 +178,8 @@ def run_single_trial(
             )
 
     for prob_label, f_upper_prob, f_batch_prob, _, __ in problems:
+        if "CMA-ES (black-box)" not in methods:
+            continue
         rng_cma = np.random.default_rng(trial_idx)
         f_calls = 0
         f_best = np.inf
@@ -235,6 +247,8 @@ def run_single_trial(
         )
 
     for prob_label, f_upper_prob, _, __, df_full_prob in problems:
+        if "L-BFGS (white-box)" not in methods:
+            continue
         z_init = np.random.default_rng(trial_idx).uniform(-BOUND, BOUND, size=n)
 
         param = torch.nn.Parameter(torch.tensor(z_init.copy(), dtype=torch.float64))
@@ -272,9 +286,8 @@ def run_single_trial(
             iter_trace.append(step_idx)
             fcalls_trace_bfgs.append(fcall_counter[0])
             fval_trace_bfgs.append(last_f[0])
-            # Same target as the CMA-ES baseline; strong_wolfe line search can
-            # stall near machine precision without ever satisfying a tight gtol.
-            if last_f[0] < GAP_TOL or np.max(np.abs(last_g[0])) < 1e-10:
+            # Same convergence target as the CMA-ES baseline.
+            if last_f[0] < GAP_TOL:
                 break
 
         iters_arr = np.array(iter_trace)
@@ -300,6 +313,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dim-y", type=int, required=True, choices=DIM_Y_LIST)
     parser.add_argument("--trial", type=int, required=True)
+    parser.add_argument(
+        "--methods",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated subset of methods to run (default: all). "
+            f"Choices: {', '.join(ALL_METHODS)}"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -308,7 +330,17 @@ if __name__ == "__main__":
     DIM_Y = args.dim_y
     trial_idx = args.trial
 
-    print(f"[dim_y={DIM_Y} trial={trial_idx}] starting")
+    if args.methods is None:
+        methods = ALL_METHODS
+    else:
+        methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+        unknown = [m for m in methods if m not in ALL_METHODS]
+        if unknown:
+            raise SystemExit(
+                f"Unknown method(s) {unknown}; choices are {ALL_METHODS}"
+            )
+
+    print(f"[dim_y={DIM_Y} trial={trial_idx}] starting (methods={methods})")
 
     # Fixed randomness: objective function geometry (depends only on DIM_Y,
     # so every trial/process for a given DIM_Y reconstructs the same problem).
@@ -319,5 +351,5 @@ if __name__ == "__main__":
     _Q_R, _R_R = np.linalg.qr(rng.standard_normal((DIM_Y, DIM_Y)))
     R_inner = _Q_R * np.sign(np.diag(_R_R))
 
-    trial_traces = run_single_trial(trial_idx, DIM_Y, C_mat, R_inner)
+    trial_traces = run_single_trial(trial_idx, DIM_Y, C_mat, R_inner, methods=methods)
     save_csv(trial_traces, DIM_X, DIM_Y, trial_idx)
