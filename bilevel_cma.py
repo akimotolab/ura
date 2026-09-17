@@ -699,6 +699,7 @@ class BilevelCMAGrad:
     ) -> None:
         self.f_upper_calls = 0
         self.f_lower_calls = 0
+        self.f_grad_calls = 0
 
         self.f_upper = f_upper
         self.f_lower = (lambda x, y: -f_upper(x, y)) if f_lower is None else f_lower
@@ -793,6 +794,7 @@ class BilevelCMAGrad:
         """Single adaptive gradient step minimizing f_lower(x_i, y)."""
         fcalls = 0
         g = self.df_lower(x_i, y_curr)
+        self.f_grad_calls += 1
 
         if self.use_rmsprop:
             v = self.rmsprop_beta * v + (1 - self.rmsprop_beta) * g**2
@@ -964,6 +966,7 @@ class BilevelCMAGrad:
                 {
                     "lower_call_count": self.f_lower_calls,
                     "upper_call_count": self.f_upper_calls,
+                    "grad_call_count": self.f_grad_calls,
                     "sigma_x": self.upper_cma.sigma,
                     "f_lower_min": float(self.f_lower_min.min()),
                     "f_upper_min": float(self.f_upper_min.min()),
@@ -1028,6 +1031,7 @@ class BilevelCMAGrad:
         columns = [
             "lower_call_count",
             "upper_call_count",
+            "grad_call_count",
             "sigma_x",
             "f_lower_min",
             "f_upper_min",
@@ -1544,6 +1548,16 @@ class BilevelCMALBFGS:
         'strong_wolfe' or None (Armijo-only backtracking).
     cmax : int
         max_iter per optimizer.step() call -- L-BFGS iterations per tau-loop pass.
+    warm_start : bool
+        If False, each pool slot's L-BFGS curvature state (old_dirs, old_stps, ro,
+        H_diag, prev_flat_grad) is reset before every outer ura() call instead of
+        persisting across outer (CMA-ES generation) iterations. Ablation switch;
+        default True preserves the normal warm-started behavior.
+    tau_thr : float
+        Kendall-tau rank-stability threshold that ends the tau-loop early once the
+        upper-level ranking has stabilized. To ablate this early stopping, pass a
+        value > 1 (kendalltau is bounded in [-1, 1]), e.g. tau_thr=2.0 -- no code
+        change needed; every slot then just runs until it hits max_iter_lower.
     (all other parameters identical to BilevelCMABFGS)
     """
 
@@ -1571,6 +1585,7 @@ class BilevelCMALBFGS:
         Vxmin: float = 1e-8,
         Cxmax: float = 1e7,
         cmax: int = 20,
+        warm_start: bool = True,
         tau_thr: float = 0.7,
         pn: float = 0.05,
         pp: float = 0.4,
@@ -1589,6 +1604,7 @@ class BilevelCMALBFGS:
         import numpy as np
         self.f_upper_calls = 0
         self.f_lower_calls = 0
+        self.f_grad_calls = 0
 
         self.f_upper = f_upper
         self.f_lower = (lambda x, y: -f_upper(x, y)) if f_lower is None else f_lower
@@ -1614,6 +1630,7 @@ class BilevelCMALBFGS:
         self.Vxmin = Vxmin
         self.Cxmax = Cxmax
         self.cmax = cmax
+        self.warm_start = warm_start
         self.tau_thr = tau_thr
         self.pp = pp
         self.pn = pn
@@ -1774,13 +1791,22 @@ class BilevelCMALBFGS:
         self.f_upper_min = prev_f_upper_min.copy()
 
         y_tilde = self.y[self.k_min].copy()
-        lbfgs_state_tilde = [self.lbfgs_state[k] for k in self.k_min]
+        # Ablation: warm_start=False discards any curvature state carried over
+        # from previous outer (CMA-ES generation) iterations, so every slot's
+        # L-BFGS solve starts fresh this call.
+        if self.warm_start:
+            lbfgs_state_tilde = [self.lbfgs_state[k] for k in self.k_min]
+        else:
+            lbfgs_state_tilde = [None] * self.lambda_x
 
         h = np.ones(self.lambda_x, dtype=bool)
         iter_count = np.zeros(self.lambda_x, dtype=int)
         Fnew = Fold.copy()
 
         tau = -1.0
+        # To ablate this rank-stability early stop without touching the code,
+        # pass tau_thr > 1 (kendalltau is bounded in [-1, 1]); the loop then
+        # only exits via max_iter_lower / per-slot non-improvement below.
         while tau <= self.tau_thr:
             if not h.any():
                 break
@@ -1796,6 +1822,9 @@ class BilevelCMALBFGS:
                     self.x[i], y_tilde[i], lbfgs_state_tilde[i]
                 )
                 self.f_lower_calls += nfev
+                # Each closure() call inside _run_lbfgs computes value and
+                # gradient together, so nfev also counts gradient evals.
+                self.f_grad_calls += nfev
                 iter_count[i] += 1
 
                 if fnew < fold:
@@ -1874,6 +1903,7 @@ class BilevelCMALBFGS:
                 {
                     "lower_call_count": self.f_lower_calls,
                     "upper_call_count": self.f_upper_calls,
+                    "grad_call_count": self.f_grad_calls,
                     "sigma_x": self.upper_cma.sigma,
                     "f_lower_min": float(self.f_lower_min.min()),
                     "f_upper_min": float(self.f_upper_min.min()),
@@ -1918,7 +1948,7 @@ class BilevelCMALBFGS:
         nominal_x.extend(x)
         nominal_y.extend(y)
 
-        columns = ["lower_call_count", "upper_call_count", "sigma_x", "f_lower_min", "f_upper_min"]
+        columns = ["lower_call_count", "upper_call_count", "grad_call_count", "sigma_x", "f_lower_min", "f_upper_min"]
         columns += [f"mean_{i}" for i in range(self.dim_x)]
         columns += [f"std_{i}" for i in range(self.dim_x)]
         columns += [f"eigen_{i}" for i in range(self.dim_x)]

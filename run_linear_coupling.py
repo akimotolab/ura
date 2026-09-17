@@ -60,15 +60,61 @@ def make_quadratic_coupling(
     return f_upper, f_batch, df_lower, df_full
 
 
-configs = [
-    {"label": "URA-GD", "cls": BilevelCMAGrad, "extra": {"use_rmsprop": False}},
-    {"label": "URA-RMSprop", "cls": BilevelCMAGrad, "extra": {"use_rmsprop": True}},
-    {"label": "URA-L-BFGS", "cls": BilevelCMALBFGS, "extra": {}, "cmax": None},
-    {"label": "URA-CMA-ES", "cls": BilevelCMA, "extra": {}},
-]
+ABLATION_MODES = ("full", "no-es", "no-ws", "no-es-no-ws")
+
+# kendalltau is bounded in [-1, 1], so tau_thr > 1 makes BilevelCMALBFGS's
+# `while tau <= self.tau_thr` rank-stability check never trigger -- disabling
+# that early stop needs no code change, just this constructor kwarg.
+NO_ES_TAU_THR = 2.0
+
+_ABLATION_LBFGS_KWARGS = {
+    "full":        {},
+    "no-es":       {"tau_thr": NO_ES_TAU_THR},
+    "no-ws":       {"warm_start": False},
+    "no-es-no-ws": {"tau_thr": NO_ES_TAU_THR, "warm_start": False},
+}
+ABLATION_LBFGS_LABEL = {
+    "full":        "URA-L-BFGS",
+    "no-es":       "URA-L-BFGS (no-es)",
+    "no-ws":       "URA-L-BFGS (no-ws)",
+    "no-es-no-ws": "URA-L-BFGS (no-es-no-ws)",
+}
+
+
+def build_configs(ablation: str = "full") -> list[dict]:
+    """Method configs for the `configs` loop in run_single_trial.
+
+    `ablation` selects the URA-L-BFGS variant (one of ABLATION_MODES):
+    "full" is the normal solver; "no-es" disables the rank-stability early
+    stop via tau_thr (see NO_ES_TAU_THR); "no-ws" disables warm-starting
+    (BilevelCMALBFGS's warm_start=False); "no-es-no-ws" combines both. Each
+    non-"full" variant gets its own label so its output never collides with
+    the normal run or with another ablation mode.
+    """
+    if ablation not in _ABLATION_LBFGS_KWARGS:
+        raise ValueError(f"ablation must be one of {ABLATION_MODES}, got {ablation!r}")
+    return [
+        {"label": "URA-GD", "cls": BilevelCMAGrad, "extra": {"use_rmsprop": False}},
+        {"label": "URA-RMSprop", "cls": BilevelCMAGrad, "extra": {"use_rmsprop": True}},
+        {
+            "label": ABLATION_LBFGS_LABEL[ablation],
+            "cls": BilevelCMALBFGS,
+            "extra": _ABLATION_LBFGS_KWARGS[ablation],
+            "cmax": None,
+        },
+        {"label": "URA-CMA-ES", "cls": BilevelCMA, "extra": {}},
+    ]
+
 
 BASELINE_METHODS = ["CMA-ES (black-box)", "L-BFGS (white-box)"]
-ALL_METHODS = [cfg["label"] for cfg in configs] + BASELINE_METHODS
+
+
+def all_methods(ablation: str = "full") -> list[str]:
+    return [cfg["label"] for cfg in build_configs(ablation)] + BASELINE_METHODS
+
+
+# Default (full, non-ablation) method universe, used as run_single_trial's fallback.
+ALL_METHODS = all_methods()
 
 
 def save_csv(trial_traces: dict, dim_x: int, dim_y: int, trial_idx: int) -> None:
@@ -77,7 +123,7 @@ def save_csv(trial_traces: dict, dim_x: int, dim_y: int, trial_idx: int) -> None
     never write the same path."""
     for prob_label, method_dict in trial_traces.items():
         for method, traces in method_dict.items():
-            iters, total_calls, fvals, upper_calls, lower_calls = traces
+            iters, total_calls, fvals, upper_calls, lower_calls, grad_calls = traces
             df = pd.DataFrame(
                 {
                     "trial": trial_idx,
@@ -85,6 +131,7 @@ def save_csv(trial_traces: dict, dim_x: int, dim_y: int, trial_idx: int) -> None
                     "upper_calls": upper_calls,
                     "lower_calls": lower_calls,
                     "total_calls": total_calls,
+                    "grad_calls": grad_calls,
                     "f_upper_min": fvals,
                 }
             )
@@ -103,14 +150,17 @@ def run_single_trial(
     C_mat: np.ndarray,
     R_inner: np.ndarray,
     methods: list[str] | None = None,
+    ablation: str = "full",
 ) -> dict:
     """Run the selected methods for one trial. Returns {prob_label: {method: traces}}.
 
-    `methods` restricts which of ALL_METHODS are run; None (the default) runs
-    all of them.
+    `methods` restricts which of all_methods(ablation) are run; None (the
+    default) runs all of them. `ablation` selects the URA-L-BFGS variant, one
+    of ABLATION_MODES (see build_configs).
     """
+    configs = build_configs(ablation)
     if methods is None:
-        methods = ALL_METHODS
+        methods = all_methods(ablation)
     methods = set(methods)
 
     n = DIM_X + dim_y
@@ -169,12 +219,21 @@ def run_single_trial(
             lower_calls = np.concatenate([[0], log_df["lower_call_count"].to_numpy()])
             total_calls = upper_calls + lower_calls
             fvals = np.concatenate([[f0], log_df["f_upper_min"].to_numpy()])
+            # BilevelCMA (fully black-box) never calls df_lower, so it has no
+            # grad_call_count column; treat that as zero gradient calls.
+            if "grad_call_count" in log_df.columns:
+                grad_calls = np.concatenate(
+                    [[0], log_df["grad_call_count"].to_numpy()]
+                )
+            else:
+                grad_calls = np.zeros_like(total_calls)
             trial_traces[prob_label][cfg["label"]] = (
                 iters,
                 total_calls,
                 fvals,
                 upper_calls,
                 lower_calls,
+                grad_calls,
             )
 
     for prob_label, f_upper_prob, f_batch_prob, _, __ in problems:
@@ -244,6 +303,7 @@ def run_single_trial(
             fval_arr,
             np.zeros_like(iters_arr),
             fcalls_arr,
+            np.zeros_like(iters_arr),  # black-box: no gradient calls
         )
 
     for prob_label, f_upper_prob, _, __, df_full_prob in problems:
@@ -299,6 +359,9 @@ def run_single_trial(
             fval_arr,
             fcalls_arr,
             np.zeros_like(iters_arr),
+            # closure() computes f and its gradient together every call, so
+            # gradient calls equal function calls here.
+            fcalls_arr,
         )
 
     print(f"  [trial {trial_idx:2d} | dim_y={dim_y}] done", flush=True)
@@ -318,8 +381,24 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Comma-separated subset of methods to run (default: all). "
-            f"Choices: {', '.join(ALL_METHODS)}"
+            "Comma-separated subset of methods to run (default: all). Choices "
+            "depend on --ablation, e.g. with --ablation=no-es: "
+            f"{', '.join(all_methods('no-es'))}."
+        ),
+    )
+    parser.add_argument(
+        "--ablation",
+        type=str,
+        default="full",
+        choices=ABLATION_MODES,
+        help=(
+            "Which URA-L-BFGS variant to run (default: full, i.e. normal "
+            "URA-L-BFGS): 'no-es' disables the rank-stability early stop "
+            "(tau_thr set > 1), 'no-ws' disables warm-starting (curvature "
+            "state no longer persists across outer CMA-ES generations), "
+            "'no-es-no-ws' combines both. Each non-'full' mode gets its own "
+            "label (e.g. 'URA-L-BFGS (no-es)') so its output never collides "
+            "with the normal run or another ablation mode."
         ),
     )
     return parser.parse_args()
@@ -329,18 +408,22 @@ if __name__ == "__main__":
     args = parse_args()
     DIM_Y = args.dim_y
     trial_idx = args.trial
+    methods_universe = all_methods(args.ablation)
 
     if args.methods is None:
-        methods = ALL_METHODS
+        methods = methods_universe
     else:
         methods = [m.strip() for m in args.methods.split(",") if m.strip()]
-        unknown = [m for m in methods if m not in ALL_METHODS]
+        unknown = [m for m in methods if m not in methods_universe]
         if unknown:
             raise SystemExit(
-                f"Unknown method(s) {unknown}; choices are {ALL_METHODS}"
+                f"Unknown method(s) {unknown}; choices are {methods_universe}"
             )
 
-    print(f"[dim_y={DIM_Y} trial={trial_idx}] starting (methods={methods})")
+    print(
+        f"[dim_y={DIM_Y} trial={trial_idx}] starting "
+        f"(methods={methods}, ablation={args.ablation})"
+    )
 
     # Fixed randomness: objective function geometry (depends only on DIM_Y,
     # so every trial/process for a given DIM_Y reconstructs the same problem).
@@ -351,5 +434,7 @@ if __name__ == "__main__":
     _Q_R, _R_R = np.linalg.qr(rng.standard_normal((DIM_Y, DIM_Y)))
     R_inner = _Q_R * np.sign(np.diag(_R_R))
 
-    trial_traces = run_single_trial(trial_idx, DIM_Y, C_mat, R_inner, methods=methods)
+    trial_traces = run_single_trial(
+        trial_idx, DIM_Y, C_mat, R_inner, methods=methods, ablation=args.ablation
+    )
     save_csv(trial_traces, DIM_X, DIM_Y, trial_idx)

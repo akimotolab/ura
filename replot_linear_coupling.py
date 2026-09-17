@@ -23,22 +23,42 @@ titles = {
     "qcoupling_cond1e4": r"$\kappa(A)=10^4$",
 }
 colors = {
-    "URA-GD":             "C0",
-    "URA-RMSprop":        "C1",
-    "URA-L-BFGS":         "C2",
-    "URA-CMA-ES":         "C3",
-    "CMA-ES (black-box)": "C4",
-    "L-BFGS (white-box)": "C5",
+    "URA-GD":                     "C0",
+    "URA-RMSprop":                "C1",
+    "URA-L-BFGS":                 "C2",
+    "URA-CMA-ES":                 "C3",
+    "CMA-ES (black-box)":         "C4",
+    "L-BFGS (white-box)":         "C5",
+    "URA-L-BFGS (no-es)":         "C6",
+    "URA-L-BFGS (no-ws)":         "C7",
+    "URA-L-BFGS (no-es-no-ws)":   "C8",
 }
 
 SAFE_TO_LABEL = {
-    "URA-GD":           "URA-GD",
-    "URA-RMSprop":      "URA-RMSprop",
-    "URA-L-BFGS":       "URA-L-BFGS",
-    "URA-CMA-ES":       "URA-CMA-ES",
-    "CMA-ES_black-box": "CMA-ES (black-box)",
-    "L-BFGS_white-box": "L-BFGS (white-box)",
+    "URA-GD":                     "URA-GD",
+    "URA-RMSprop":                "URA-RMSprop",
+    "URA-L-BFGS":                 "URA-L-BFGS",
+    "URA-CMA-ES":                 "URA-CMA-ES",
+    "CMA-ES_black-box":           "CMA-ES (black-box)",
+    "L-BFGS_white-box":           "L-BFGS (white-box)",
+    "URA-L-BFGS_no-es":           "URA-L-BFGS (no-es)",
+    "URA-L-BFGS_no-ws":           "URA-L-BFGS (no-ws)",
+    "URA-L-BFGS_no-es-no-ws":     "URA-L-BFGS (no-es-no-ws)",
 }
+
+# Methods produced only by an opt-in run (run_linear_coupling.py
+# --ablation no-es/no-ws/no-es-no-ws). Missing files for these never block
+# plotting the rest.
+OPTIONAL_METHODS = {
+    "URA-L-BFGS (no-es)", "URA-L-BFGS (no-ws)", "URA-L-BFGS (no-es-no-ws)",
+}
+
+# Methods that call a gradient oracle; their grad-call counts get an extra
+# dashed overlay on the f-calls plot. Black-box methods (URA-CMA-ES,
+# CMA-ES (black-box)) never call df_lower, so they're excluded.
+GRAD_METHODS = {
+    "URA-GD", "URA-RMSprop", "URA-L-BFGS", "L-BFGS (white-box)",
+} | OPTIONAL_METHODS
 
 
 def aggregate_trials(
@@ -91,6 +111,7 @@ def make_plot(
     xlabel: str,
     filename: str,
     log_x: bool = False,
+    grad_idx: int | None = None,
 ) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(6, 3))
     handles, labels = None, None
@@ -103,6 +124,9 @@ def make_plot(
             color = colors[method]
             ax.plot(x_grid, median, label=method, color=color)
             ax.fill_between(x_grid, q25, q75, color=color, alpha=0.2, linewidth=0)
+            if grad_idx is not None and method in GRAD_METHODS:
+                g_grid, g_median, _, _ = aggregate_trials(traces_list, grad_idx, log_x)
+                ax.plot(g_grid, g_median, color=color, linestyle="--")
         ax.axhline(1e-6, color="grey", linestyle="--", linewidth=1)
         ax.set_yscale("log")
         if log_x:
@@ -152,7 +176,8 @@ for DIM_Y in DIM_Y_LIST:
                 if os.path.exists(legacy_path):
                     paths = [legacy_path]
             if not paths:
-                missing.append(pattern)
+                if label not in OPTIONAL_METHODS:
+                    missing.append(pattern)
                 continue
 
             df = pd.concat((pd.read_csv(p) for p in paths), ignore_index=True)
@@ -162,6 +187,10 @@ for DIM_Y in DIM_Y_LIST:
             if "trial" not in df.columns:
                 df["trial"] = 0
 
+            # Older CSVs predate grad_calls; treat missing as no gradient calls.
+            if "grad_calls" not in df.columns:
+                df["grad_calls"] = 0
+
             traces_list = []
             for _, grp in df.groupby("trial", sort=True):
                 traces_list.append((
@@ -170,6 +199,7 @@ for DIM_Y in DIM_Y_LIST:
                     grp["f_upper_min"].to_numpy(),
                     grp["upper_calls"].to_numpy(),
                     grp["lower_calls"].to_numpy(),
+                    grp["grad_calls"].to_numpy(),
                 ))
             trial_results[prob_label][label] = traces_list
 
@@ -182,4 +212,4 @@ for DIM_Y in DIM_Y_LIST:
     make_plot(trial_results, DIM_X, DIM_Y, 0, "Iterations",
               f"qcoupling_iters_x{DIM_X}_y{DIM_Y}.pdf")
     make_plot(trial_results, DIM_X, DIM_Y, 1, r"Total $f$-calls",
-              f"qcoupling_fcalls_x{DIM_X}_y{DIM_Y}.pdf", log_x=True)
+              f"qcoupling_fcalls_x{DIM_X}_y{DIM_Y}.pdf", log_x=True, grad_idx=5)
