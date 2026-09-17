@@ -17,10 +17,18 @@ DIM_Y_LIST = [10, 30, 100, 300, 1000]
 DATA_DIR = "results_data"
 
 plot_order = ["qcoupling_cond1", "qcoupling_cond1e4"]
+# run_linear_coupling.py --zero-coupling writes these under a "qdecoupled_*"
+# prefix instead of "qcoupling_*" (see its --zero-coupling help), so they
+# never collide with the coupled data above.
+plot_order_decoupled = ["qdecoupled_cond1", "qdecoupled_cond1e4"]
 
 titles = {
     "qcoupling_cond1":   r"$\kappa(A)=1$",
     "qcoupling_cond1e4": r"$\kappa(A)=10^4$",
+    # Same titles as the coupled case -- condition number of A has the same
+    # meaning whether or not C_mat is zeroed.
+    "qdecoupled_cond1":   r"$\kappa(A)=1$",
+    "qdecoupled_cond1e4": r"$\kappa(A)=10^4$",
 }
 colors = {
     "URA-GD":                     "C0",
@@ -112,6 +120,7 @@ def make_plot(
     filename: str,
     log_x: bool = False,
     grad_idx: int | None = None,
+    plot_order: list = plot_order,
 ) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(6, 3))
     handles, labels = None, None
@@ -155,23 +164,25 @@ def make_plot(
     print(f"saved {filename}")
 
 
-for DIM_Y in DIM_Y_LIST:
+def generate_plots(dim_y: int, order: list, prefix: str) -> None:
+    """Build trial_results for `order`'s problems and render its two plots
+    (iters, fcalls) exactly as make_plot always has, just under `prefix`."""
     trial_results: dict[str, dict[str, list]] = {}
     missing = []
 
-    for prob_label in plot_order:
+    for prob_label in order:
         trial_results[prob_label] = {}
         for safe_method, label in SAFE_TO_LABEL.items():
             # Current runs write one file per trial (run_linear_coupling.sh
             # launches one process per trial); fall back to the older
             # single combined-file layout if no per-trial files exist.
             pattern = os.path.join(
-                DATA_DIR, f"x{DIM_X}_y{DIM_Y}_{prob_label}_{safe_method}_trial*.csv"
+                DATA_DIR, f"x{DIM_X}_y{dim_y}_{prob_label}_{safe_method}_trial*.csv"
             )
             paths = sorted(glob.glob(pattern))
             if not paths:
                 legacy_path = os.path.join(
-                    DATA_DIR, f"x{DIM_X}_y{DIM_Y}_{prob_label}_{safe_method}.csv"
+                    DATA_DIR, f"x{DIM_X}_y{dim_y}_{prob_label}_{safe_method}.csv"
                 )
                 if os.path.exists(legacy_path):
                     paths = [legacy_path]
@@ -204,12 +215,18 @@ for DIM_Y in DIM_Y_LIST:
             trial_results[prob_label][label] = traces_list
 
     if missing:
-        print(f"DIM_Y={DIM_Y}: skipping — missing files:")
+        print(f"DIM_Y={dim_y} ({prefix}): skipping — missing files:")
         for p in missing:
             print(f"  {p}")
-        continue
+        return
 
-    make_plot(trial_results, DIM_X, DIM_Y, 0, "Iterations",
-              f"qcoupling_iters_x{DIM_X}_y{DIM_Y}.pdf")
-    make_plot(trial_results, DIM_X, DIM_Y, 1, r"Total $f$-calls",
-              f"qcoupling_fcalls_x{DIM_X}_y{DIM_Y}.pdf", log_x=True, grad_idx=5)
+    make_plot(trial_results, DIM_X, dim_y, 0, "Iterations",
+              f"{prefix}_iters_x{DIM_X}_y{dim_y}.pdf", plot_order=order)
+    make_plot(trial_results, DIM_X, dim_y, 1, r"Total $f$-calls",
+              f"{prefix}_fcalls_x{DIM_X}_y{dim_y}.pdf", log_x=True, grad_idx=5,
+              plot_order=order)
+
+
+for DIM_Y in DIM_Y_LIST:
+    generate_plots(DIM_Y, plot_order, "qcoupling")
+    generate_plots(DIM_Y, plot_order_decoupled, "qdecoupled")

@@ -151,12 +151,18 @@ def run_single_trial(
     R_inner: np.ndarray,
     methods: list[str] | None = None,
     ablation: str = "full",
+    zero_coupling: bool = False,
 ) -> dict:
     """Run the selected methods for one trial. Returns {prob_label: {method: traces}}.
 
     `methods` restricts which of all_methods(ablation) are run; None (the
     default) runs all of them. `ablation` selects the URA-L-BFGS variant, one
-    of ABLATION_MODES (see build_configs).
+    of ABLATION_MODES (see build_configs). `zero_coupling` zeroes out C_mat
+    (the matrix multiplying x in y - Cx), decoupling the lower-level optimum
+    y*(x)=0 from x entirely; problems are labeled "qdecoupled_*" instead of
+    "qcoupling_*" so the two never collide. Combined with the two condition
+    numbers below, coupled/decoupled x {cond=1, cond=1e4} gives 4 total
+    benchmark function types.
     """
     configs = build_configs(ablation)
     if methods is None:
@@ -168,9 +174,15 @@ def run_single_trial(
     yb = np.array([[-BOUND] * dim_y, [BOUND] * dim_y])
     full_bounds = np.array([[-BOUND] * n, [BOUND] * n])
 
+    # Zeroing C_mat post-hoc (rather than skipping its construction in
+    # __main__) keeps the RNG stream -- and so R_inner and every other random
+    # draw -- identical between coupled and decoupled runs.
+    C_eff = np.zeros_like(C_mat) if zero_coupling else C_mat
+    label_prefix = "qdecoupled" if zero_coupling else "qcoupling"
+
     problems = [
-        ("qcoupling_cond1", *make_quadratic_coupling(1.0, dim_y, C_mat, R_inner)),
-        ("qcoupling_cond1e4", *make_quadratic_coupling(1e4, dim_y, C_mat, R_inner)),
+        (f"{label_prefix}_cond1", *make_quadratic_coupling(1.0, dim_y, C_eff, R_inner)),
+        (f"{label_prefix}_cond1e4", *make_quadratic_coupling(1e4, dim_y, C_eff, R_inner)),
     ]
 
     trial_traces: dict[str, dict[str, tuple]] = {pl: {} for pl, *_ in problems}
@@ -401,6 +413,18 @@ def parse_args() -> argparse.Namespace:
             "with the normal run or another ablation mode."
         ),
     )
+    parser.add_argument(
+        "--zero-coupling",
+        action="store_true",
+        help=(
+            "Zero out C_mat (the matrix multiplying x in y - Cx), decoupling "
+            "the lower-level optimum from x entirely. Problems are then "
+            "labeled 'qdecoupled_cond1'/'qdecoupled_cond1e4' instead of "
+            "'qcoupling_cond1'/'qcoupling_cond1e4', so running once with and "
+            "once without this flag gives 4 total benchmark function types "
+            "(coupled/decoupled x the two condition numbers) without collision."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -422,7 +446,8 @@ if __name__ == "__main__":
 
     print(
         f"[dim_y={DIM_Y} trial={trial_idx}] starting "
-        f"(methods={methods}, ablation={args.ablation})"
+        f"(methods={methods}, ablation={args.ablation}, "
+        f"zero_coupling={args.zero_coupling})"
     )
 
     # Fixed randomness: objective function geometry (depends only on DIM_Y,
@@ -435,6 +460,12 @@ if __name__ == "__main__":
     R_inner = _Q_R * np.sign(np.diag(_R_R))
 
     trial_traces = run_single_trial(
-        trial_idx, DIM_Y, C_mat, R_inner, methods=methods, ablation=args.ablation
+        trial_idx,
+        DIM_Y,
+        C_mat,
+        R_inner,
+        methods=methods,
+        ablation=args.ablation,
+        zero_coupling=args.zero_coupling,
     )
     save_csv(trial_traces, DIM_X, DIM_Y, trial_idx)
