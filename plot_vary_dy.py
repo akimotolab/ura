@@ -38,12 +38,12 @@ DIM_Y_LIST = [10, 30, 100, 300, 1000]
 DATA_DIR_DEFAULT = "results_data"
 
 titles = {
-    "qcoupling_cond1": r"$\kappa(A)=1$",
-    "qcoupling_cond1e4": r"$\kappa(A)=10^4$",
+    "qcoupling_cond1": r"$\kappa(\boldsymbol{A})=1$",
+    "qcoupling_cond1e4": r"$\kappa(\boldsymbol{A})=10^4$",
     # Same titles for the decoupled (--zero-coupling) case -- condition
     # number of A has the same meaning whether or not C_mat is zeroed.
-    "qdecoupled_cond1": r"$\kappa(A)=1$",
-    "qdecoupled_cond1e4": r"$\kappa(A)=10^4$",
+    "qdecoupled_cond1": r"$\kappa(\boldsymbol{A})=1$",
+    "qdecoupled_cond1e4": r"$\kappa(\boldsymbol{A})=10^4$",
 }
 
 # Mode 1 (--ablation off, default): the fixed 4-method comparison -- normal
@@ -66,6 +66,16 @@ _ABLATION_COMPARE_MARKER_COLOR = {
     "no-es": dict(color="C1", marker="s"),
     "no-ws": dict(color="C2", marker="^"),
     "no-es-no-ws": dict(color="C3", marker="v"),
+}
+
+# Short legend labels for mode 2, keyed by the full ABLATION_LBFGS_LABEL
+# strings (matches replot_linear_coupling.py's ABLATION_DISPLAY_LABEL). Data
+# loading / file lookup still use the full labels; this is legend-text only.
+ABLATION_DISPLAY_LABEL = {
+    "URA-L-BFGS": "Full",
+    "URA-L-BFGS (no-es)": "No ES",
+    "URA-L-BFGS (no-ws)": "No WS",
+    "URA-L-BFGS (no-es-no-ws)": "No ES, no WS",
 }
 
 
@@ -187,7 +197,9 @@ def plot(
     plot_order: list[str],
     method_style: dict,
     grad_overlay_labels: set[str],
+    display_label: dict | None = None,
 ) -> None:
+    display_label = display_label or {}
     methods = [m for m in method_style if m in df["method"].unique()]
     dy_values = sorted(df["dim_y"].unique())
 
@@ -300,7 +312,7 @@ def plot(
         ax_eval.grid(True, which="both", alpha=0.3)
 
     axes[0, 0].set_ylabel("Success rate")
-    axes[1, 0].set_ylabel("Total function evaluations")
+    axes[1, 0].set_ylabel("Total FEs")
 
     # Custom legend: filled marker + unfilled marker per method, no line
     legend_handles = []
@@ -327,7 +339,7 @@ def plot(
             markersize=8,
         )
         legend_handles.append((filled, unfilled))
-        legend_labels.append(method)
+        legend_labels.append(display_label.get(method, method))
 
     fig.tight_layout(rect=[0, 0.1, 1, 1])
     fig.legend(
@@ -440,6 +452,7 @@ def main():
         plot_order,
         method_style,
         grad_overlay_labels,
+        display_label=ABLATION_DISPLAY_LABEL if args.ablation else None,
     )
 
 
