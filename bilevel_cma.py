@@ -1549,10 +1549,13 @@ class BilevelCMALBFGS:
     cmax : int
         max_iter per optimizer.step() call -- L-BFGS iterations per tau-loop pass.
     warm_start : bool
-        If False, each pool slot's L-BFGS curvature state (old_dirs, old_stps, ro,
-        H_diag, prev_flat_grad) is reset before every outer ura() call instead of
-        persisting across outer (CMA-ES generation) iterations. Ablation switch;
-        default True preserves the normal warm-started behavior.
+        If False, every offspring gets a fresh random y_tilde and empty L-BFGS
+        curvature state (old_dirs, old_stps, ro, H_diag, prev_flat_grad) each
+        outer ura() call, instead of warm-starting both from a pool slot
+        carried over across outer (CMA-ES generation) iterations. Since the
+        pool then has nothing to be read for a starting point, n_omega also
+        collapses to 1 in this mode (unless explicitly overridden). Ablation
+        switch; default True preserves the normal warm-started behavior.
     tau_thr : float
         Kendall-tau rank-stability threshold that ends the tau-loop early once the
         upper-level ranking has stabilized. To ablate this early stopping, pass a
@@ -1625,12 +1628,22 @@ class BilevelCMALBFGS:
         self.line_search_fn = line_search_fn
 
         self.lambda_x = lambda_x if lambda_x is not None else 4 + int(3 * np.log(dim_x))
-        self.n_omega = n_omega if n_omega is not None else 3 * self.lambda_x
+        self.warm_start = warm_start
+        if n_omega is not None:
+            self.n_omega = n_omega
+        elif not warm_start:
+            # Ablation: warm_start=False also skips warm-starting y_tilde
+            # itself (see ura()), so the pool never gets read as a starting
+            # point -- a >1 pool only exists to give warm-starting good
+            # candidates to pick from, which buys nothing here. Collapse to
+            # a single slot instead of carrying an unused 3*lambda_x pool.
+            self.n_omega = 1
+        else:
+            self.n_omega = 3 * self.lambda_x
 
         self.Vxmin = Vxmin
         self.Cxmax = Cxmax
         self.cmax = cmax
-        self.warm_start = warm_start
         self.tau_thr = tau_thr
         self.pp = pp
         self.pn = pn
@@ -1774,30 +1787,38 @@ class BilevelCMALBFGS:
         """Upper-level ranking assessment using warm-started torch L-BFGS inner solver."""
         import numpy as np
         from scipy.stats import kendalltau
-        fx_arr = np.array([[self.f_lower(x, y) for y in self.y] for x in self.x])
-        self.f_lower_calls += self.lambda_x * self.n_omega
-        self.k_min = np.argmin(fx_arr, axis=1)
 
-        Fold = np.min(fx_arr, axis=1)
+        if self.warm_start:
+            fx_arr = np.array([[self.f_lower(x, y) for y in self.y] for x in self.x])
+            self.f_lower_calls += self.lambda_x * self.n_omega
+            self.k_min = np.argmin(fx_arr, axis=1)
+            Fold = np.min(fx_arr, axis=1)
+            y_tilde = self.y[self.k_min].copy()
+            lbfgs_state_tilde = [self.lbfgs_state[k] for k in self.k_min]
+        else:
+            # Ablation: skip pool-based warm-starting of both the L-BFGS
+            # curvature state *and* the starting y -- every offspring gets a
+            # fresh random y_tilde every generation, with empty curvature.
+            # self.y/self.lbfgs_state (n_omega=1, see __init__) are still
+            # written at the end of this method but never read as a
+            # starting point, so this is a full cold start each call.
+            delta_y = self.yb[1] - self.yb[0]
+            y_tilde = self.rng.random((self.lambda_x, self.dim_y)) * delta_y + self.yb[0]
+            Fold = np.array([self.f_lower(x, y) for x, y in zip(self.x, y_tilde)])
+            self.f_lower_calls += self.lambda_x
+            self.k_min = np.zeros(self.lambda_x, dtype=int)
+            lbfgs_state_tilde = [None] * self.lambda_x
+
         if self.single_objective:
-            prev_f_upper_min = fx_arr[np.arange(self.lambda_x), self.k_min]
+            prev_f_upper_min = Fold.copy()
         else:
             prev_f_upper_min = np.array(
-                [self.f_upper(x, y) for x, y in zip(self.x, self.y[self.k_min])]
+                [self.f_upper(x, y) for x, y in zip(self.x, y_tilde)]
             )
             self.f_upper_calls += self.lambda_x
 
         self.f_lower_min = Fold.copy()
         self.f_upper_min = prev_f_upper_min.copy()
-
-        y_tilde = self.y[self.k_min].copy()
-        # Ablation: warm_start=False discards any curvature state carried over
-        # from previous outer (CMA-ES generation) iterations, so every slot's
-        # L-BFGS solve starts fresh this call.
-        if self.warm_start:
-            lbfgs_state_tilde = [self.lbfgs_state[k] for k in self.k_min]
-        else:
-            lbfgs_state_tilde = [None] * self.lambda_x
 
         h = np.ones(self.lambda_x, dtype=bool)
         iter_count = np.zeros(self.lambda_x, dtype=int)
