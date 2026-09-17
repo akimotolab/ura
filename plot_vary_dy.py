@@ -73,9 +73,9 @@ _ABLATION_COMPARE_MARKER_COLOR = {
 # loading / file lookup still use the full labels; this is legend-text only.
 ABLATION_DISPLAY_LABEL = {
     "URA-L-BFGS": "Full",
-    "URA-L-BFGS (no-es)": "No ES",
-    "URA-L-BFGS (no-ws)": "No WS",
-    "URA-L-BFGS (no-es-no-ws)": "No ES, no WS",
+    "URA-L-BFGS (no-es)": "No early stopping",
+    "URA-L-BFGS (no-ws)": "No warm starting",
+    "URA-L-BFGS (no-es-no-ws)": "No early stopping, no warm starting",
 }
 
 
