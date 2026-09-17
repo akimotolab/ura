@@ -47,12 +47,15 @@ titles = {
 }
 
 # Mode 1 (--ablation off, default): the fixed 4-method comparison -- normal
-# (full, unablated) URA-L-BFGS against the other 3 baselines.
+# (full, unablated) URA-L-BFGS against the other 3 baselines. Order matters
+# for the legend: matplotlib's ncol=2 legend fills column-major, so this
+# ordering puts URA-L-BFGS/L-BFGS (white-box) in row 1 and URA-CMA-ES/CMA-ES
+# (black-box) in row 2 (matches replot_linear_coupling.py's legend layout).
 _BASELINE_MARKER_COLOR = {
     "URA-L-BFGS": dict(color="C0", marker="o"),
     "URA-CMA-ES": dict(color="C1", marker="s"),
-    "CMA-ES (black-box)": dict(color="C2", marker="^"),
-    "L-BFGS (white-box)": dict(color="C3", marker="v"),
+    "L-BFGS (white-box)": dict(color="C2", marker="^"),
+    "CMA-ES (black-box)": dict(color="C3", marker="v"),
 }
 
 # Mode 2 (--ablation on): compare the 4 URA-L-BFGS ablation patterns against
@@ -326,13 +329,13 @@ def plot(
         legend_handles.append((filled, unfilled))
         legend_labels.append(method)
 
-    fig.tight_layout(rect=[0, 0.06, 1, 1])
+    fig.tight_layout(rect=[0, 0.1, 1, 1])
     fig.legend(
         legend_handles,
         legend_labels,
         handler_map={tuple: HandlerTuple(ndivide=None, pad=0.5)},
         loc="lower center",
-        ncol=len(legend_handles),
+        ncol=(len(legend_handles) + 1) // 2,
         fontsize=9,
         bbox_to_anchor=(0.5, 0.01),
         frameon=True,
