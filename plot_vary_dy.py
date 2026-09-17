@@ -46,21 +46,24 @@ titles = {
     "qdecoupled_cond1e4": r"$\kappa(A)=10^4$",
 }
 
-# Marker/color per method label, keyed the same way regardless of --ablation
-# (the URA-L-BFGS *slot* always uses these; build_method_style below swaps
-# in whichever ablation-mode label actually goes in that slot).
-_METHOD_MARKER_COLOR = {
-    "URA-GD": dict(color="C0", marker="v"),
-    "URA-RMSprop": dict(color="C1", marker="o"),
+# Mode 1 (--ablation off, default): the fixed 4-method comparison -- normal
+# (full, unablated) URA-L-BFGS against the other 3 baselines.
+_BASELINE_MARKER_COLOR = {
     "URA-L-BFGS": dict(color="C2", marker="^"),
     "URA-CMA-ES": dict(color="C3", marker="s"),
     "CMA-ES (black-box)": dict(color="C4", marker="D"),
     "L-BFGS (white-box)": dict(color="C5", marker="P"),
 }
 
-# Methods whose "calls to converge" also get a dotted gradient-calls overlay
-# in the eval panel (see plot()). Restricted to the two L-BFGS-family solvers.
-GRAD_OVERLAY_METHODS = {"URA-L-BFGS", "L-BFGS (white-box)"}
+# Mode 2 (--ablation on): compare the 4 URA-L-BFGS ablation patterns against
+# each other (no CMA-ES/L-BFGS baselines). Colors match replot_linear_coupling
+# .py's per-mode coloring (C2/C6/C7/C8) for consistency across the two scripts.
+_ABLATION_COMPARE_MARKER_COLOR = {
+    "full":        dict(color="C2", marker="^"),
+    "no-es":       dict(color="C6", marker="o"),
+    "no-ws":       dict(color="C7", marker="s"),
+    "no-es-no-ws": dict(color="C8", marker="D"),
+}
 
 
 def safe_name(label: str) -> str:
@@ -73,18 +76,42 @@ def build_plot_order(zero_coupling: bool) -> list[str]:
     return [f"{prefix}_cond1", f"{prefix}_cond1e4"]
 
 
-def build_method_style(ablation: str) -> dict:
-    """METHOD_STYLE, with the URA-L-BFGS slot's label/safe-name swapped to
-    whichever ablation-mode variant is selected (see run_linear_coupling.py's
-    --ablation / ABLATION_LBFGS_LABEL). marker/color stay tied to the "slot"
-    (URA-L-BFGS's marker/color), not the specific label, so switching
-    --ablation doesn't change how the URA-L-BFGS series looks.
+def build_method_style(ablation_compare: bool) -> dict:
+    """METHOD_STYLE for the selected mode (see module docstring / --ablation).
+
+    Mode 1 (ablation_compare=False): URA-L-BFGS, URA-CMA-ES, CMA-ES
+    (black-box), L-BFGS (white-box) -- URA-L-BFGS here is always the normal,
+    unablated variant, read from its plain "URA-L-BFGS"-labeled files (the
+    same ones a normal run_linear_coupling.sh run writes -- it is never given
+    an ablation-mode suffix, so no special-casing is needed here).
+
+    Mode 2 (ablation_compare=True): the 4 URA-L-BFGS ablation patterns
+    (full/no-es/no-ws/no-es-no-ws, see run_linear_coupling.py's ABLATION_MODES)
+    plotted against each other; "full" is read the same plain-labeled files
+    as mode 1's URA-L-BFGS (run_linear_coupling_ablation.sh only ever
+    generates the other 3, not "full").
     """
+    if not ablation_compare:
+        return {
+            label: dict(**mc, safe=safe_name(label))
+            for label, mc in _BASELINE_MARKER_COLOR.items()
+        }
     style = {}
-    for label, mc in _METHOD_MARKER_COLOR.items():
-        actual_label = ABLATION_LBFGS_LABEL[ablation] if label == "URA-L-BFGS" else label
-        style[actual_label] = dict(**mc, safe=safe_name(actual_label))
+    for mode, mc in _ABLATION_COMPARE_MARKER_COLOR.items():
+        label = ABLATION_LBFGS_LABEL[mode]
+        style[label] = dict(**mc, safe=safe_name(label))
     return style
+
+
+def build_grad_overlay_labels(ablation_compare: bool) -> set[str]:
+    """Labels that get the dotted gradient-calls overlay (see plot()).
+
+    Mode 1: just the two L-BFGS-family solvers. Mode 2: all 4 URA-L-BFGS
+    ablation patterns, since every one of them is L-BFGS-family too.
+    """
+    if not ablation_compare:
+        return {"URA-L-BFGS", "L-BFGS (white-box)"}
+    return set(ABLATION_LBFGS_LABEL.values())
 
 
 def load_results(
@@ -331,7 +358,7 @@ def main():
         default=None,
         help=(
             "Output file (default: plot_vary_dy.pdf, with '_decoupled' and/or "
-            "'_<ablation>' appended when --zero-coupling / --ablation are set)"
+            "'_ablation' appended when --zero-coupling / --ablation are set)"
         ),
     )
     parser.add_argument(
@@ -355,30 +382,30 @@ def main():
     )
     parser.add_argument(
         "--ablation",
-        type=str,
-        default="full",
-        choices=ABLATION_MODES,
+        action="store_true",
         help=(
-            "Which URA-L-BFGS variant to plot in the URA-L-BFGS slot (default: "
-            "full, i.e. normal URA-L-BFGS); see run_linear_coupling.py --ablation."
+            "Compare the 4 URA-L-BFGS ablation patterns "
+            f"({', '.join(ABLATION_MODES)}) against each other, instead of "
+            "the default mode-1 comparison (normal, unablated URA-L-BFGS vs. "
+            "URA-CMA-ES, CMA-ES (black-box), L-BFGS (white-box)). 'full' is "
+            "read from the same plain 'URA-L-BFGS'-labeled files as mode 1 "
+            "-- run_linear_coupling_ablation.sh only ever generates the "
+            "other 3 patterns, not 'full'."
         ),
     )
     args = parser.parse_args()
 
     plot_order = build_plot_order(args.zero_coupling)
     method_style = build_method_style(args.ablation)
-    grad_overlay_labels = {
-        ABLATION_LBFGS_LABEL[args.ablation] if m == "URA-L-BFGS" else m
-        for m in GRAD_OVERLAY_METHODS
-    }
+    grad_overlay_labels = build_grad_overlay_labels(args.ablation)
 
     out_path = args.out
     if out_path is None:
         out_path = "plot_vary_dy"
         if args.zero_coupling:
             out_path += "_decoupled"
-        if args.ablation != "full":
-            out_path += f"_{args.ablation}"
+        if args.ablation:
+            out_path += "_ablation"
         out_path += ".pdf"
 
     base_dir = Path(args.results_dir)
