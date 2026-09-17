@@ -49,20 +49,20 @@ titles = {
 # Mode 1 (--ablation off, default): the fixed 4-method comparison -- normal
 # (full, unablated) URA-L-BFGS against the other 3 baselines.
 _BASELINE_MARKER_COLOR = {
-    "URA-L-BFGS": dict(color="C2", marker="^"),
-    "URA-CMA-ES": dict(color="C3", marker="s"),
-    "CMA-ES (black-box)": dict(color="C4", marker="D"),
-    "L-BFGS (white-box)": dict(color="C5", marker="P"),
+    "URA-L-BFGS": dict(color="C0", marker="o"),
+    "URA-CMA-ES": dict(color="C1", marker="s"),
+    "CMA-ES (black-box)": dict(color="C2", marker="^"),
+    "L-BFGS (white-box)": dict(color="C3", marker="v"),
 }
 
 # Mode 2 (--ablation on): compare the 4 URA-L-BFGS ablation patterns against
 # each other (no CMA-ES/L-BFGS baselines). Colors match replot_linear_coupling
 # .py's per-mode coloring (C2/C6/C7/C8) for consistency across the two scripts.
 _ABLATION_COMPARE_MARKER_COLOR = {
-    "full":        dict(color="C2", marker="^"),
-    "no-es":       dict(color="C6", marker="o"),
-    "no-ws":       dict(color="C7", marker="s"),
-    "no-es-no-ws": dict(color="C8", marker="D"),
+    "full": dict(color="C0", marker="o"),
+    "no-es": dict(color="C1", marker="s"),
+    "no-ws": dict(color="C2", marker="^"),
+    "no-es-no-ws": dict(color="C3", marker="v"),
 }
 
 
@@ -130,11 +130,14 @@ def load_results(
                 # launches one process per trial); fall back to the older
                 # single combined-file layout if no per-trial files exist.
                 pattern = str(
-                    base_dir / f"x{DIM_X}_y{dim_y}_{prob_label}_{safe_method}_trial*.csv"
+                    base_dir
+                    / f"x{DIM_X}_y{dim_y}_{prob_label}_{safe_method}_trial*.csv"
                 )
                 paths = sorted(Path(p) for p in glob.glob(pattern))
                 if not paths:
-                    legacy_path = base_dir / f"x{DIM_X}_y{dim_y}_{prob_label}_{safe_method}.csv"
+                    legacy_path = (
+                        base_dir / f"x{DIM_X}_y{dim_y}_{prob_label}_{safe_method}.csv"
+                    )
                     if legacy_path.exists():
                         paths = [legacy_path]
                 if not paths:
@@ -288,7 +291,9 @@ def plot(
         ax_eval.set_xticks(dy_values)
         ax_eval.set_xticklabels([str(v) for v in dy_values])
         ax_eval.tick_params(axis="x", which="minor", bottom=False)
-        ax_eval.axhline(budget_cap, color="gray", linestyle="--", linewidth=0.8, alpha=0.6)
+        ax_eval.axhline(
+            budget_cap, color="gray", linestyle="--", linewidth=0.8, alpha=0.6
+        )
         ax_eval.grid(True, which="both", alpha=0.3)
 
     axes[0, 0].set_ylabel("Success rate")
@@ -409,7 +414,9 @@ def main():
         out_path += ".pdf"
 
     base_dir = Path(args.results_dir)
-    df = load_results(base_dir, args.threshold, args.budget_cap, plot_order, method_style)
+    df = load_results(
+        base_dir, args.threshold, args.budget_cap, plot_order, method_style
+    )
 
     if df.empty:
         print("No results found.")
