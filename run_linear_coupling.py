@@ -68,10 +68,10 @@ ABLATION_MODES = ("full", "no-es", "no-ws", "no-es-no-ws")
 NO_ES_TAU_THR = 2.0
 
 _ABLATION_LBFGS_KWARGS = {
-    "full":        {},
-    "no-es":       {"tau_thr": NO_ES_TAU_THR},
-    "no-ws":       {"warm_start": False},
-    "no-es-no-ws": {"tau_thr": NO_ES_TAU_THR, "warm_start": False},
+    "full":        {"restart": True},
+    "no-es":       {"tau_thr": NO_ES_TAU_THR, "restart": True},
+    "no-ws":       {"warm_start": False, "restart": True},
+    "no-es-no-ws": {"tau_thr": NO_ES_TAU_THR, "warm_start": False, "restart": True},
 }
 ABLATION_LBFGS_LABEL = {
     "full":        "URA-L-BFGS",
@@ -89,7 +89,9 @@ def build_configs(ablation: str = "full") -> list[dict]:
     stop via tau_thr (see NO_ES_TAU_THR); "no-ws" disables warm-starting
     (BilevelCMALBFGS's warm_start=False); "no-es-no-ws" combines both. Each
     non-"full" variant gets its own label so its output never collides with
-    the normal run or with another ablation mode.
+    the normal run or with another ablation mode. All four modes also turn
+    on CMA-ES restarts (restart=True, overriding run_single_trial's
+    common_kwargs restart=False).
     """
     if ablation not in _ABLATION_LBFGS_KWARGS:
         raise ValueError(f"ablation must be one of {ABLATION_MODES}, got {ablation!r}")

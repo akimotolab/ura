@@ -1,5 +1,15 @@
-"""Regenerate convergence plots from saved CSV data in results_data/."""
+"""Regenerate convergence plots from saved CSV data in results_data/.
 
+Usage:
+    uv run python replot_linear_coupling.py [--ablation]
+
+By default plots the 4-method baseline comparison (URA-L-BFGS, URA-CMA-ES,
+CMA-ES (black-box), L-BFGS (white-box)). With --ablation, plots the 4
+URA-L-BFGS ablation variants instead (labeled Full/No ES/No WS/No ES, no WS;
+see run_linear_coupling.py's --ablation for what each variant disables).
+"""
+
+import argparse
 import glob
 import os
 
@@ -54,11 +64,26 @@ SAFE_TO_LABEL = {
     "URA-L-BFGS_no-es-no-ws":     "URA-L-BFGS (no-es-no-ws)",
 }
 
-# Methods produced only by an opt-in run (run_linear_coupling.py
-# --ablation no-es/no-ws/no-es-no-ws). Missing files for these never block
-# plotting the rest.
-OPTIONAL_METHODS = {
-    "URA-L-BFGS (no-es)", "URA-L-BFGS (no-ws)", "URA-L-BFGS (no-es-no-ws)",
+# The two 4-method comparisons this script can render (see --ablation).
+# Baseline: normal (unablated) URA-L-BFGS against the other 3 methods.
+# Order matters for the legend: matplotlib's ncol=2 legend fills column-major,
+# so this ordering puts URA-L-BFGS/L-BFGS (white-box) in row 1 and
+# URA-CMA-ES/CMA-ES (black-box) in row 2.
+BASELINE_METHODS = [
+    "URA-L-BFGS", "URA-CMA-ES", "L-BFGS (white-box)", "CMA-ES (black-box)",
+]
+# Ablation: URA-L-BFGS's 4 variants against each other, with short legend
+# labels (the full "URA-L-BFGS (no-es)"-style labels are still used as dict
+# keys, matching SAFE_TO_LABEL/colors, so file lookup is unaffected).
+ABLATION_METHODS = [
+    "URA-L-BFGS", "URA-L-BFGS (no-es)", "URA-L-BFGS (no-ws)",
+    "URA-L-BFGS (no-es-no-ws)",
+]
+ABLATION_DISPLAY_LABEL = {
+    "URA-L-BFGS": "Full",
+    "URA-L-BFGS (no-es)": "No ES",
+    "URA-L-BFGS (no-ws)": "No WS",
+    "URA-L-BFGS (no-es-no-ws)": "No ES, no WS",
 }
 
 # Methods that call a gradient oracle; their grad-call counts get an extra
@@ -66,7 +91,8 @@ OPTIONAL_METHODS = {
 # CMA-ES (black-box)) never call df_lower, so they're excluded.
 GRAD_METHODS = {
     "URA-GD", "URA-RMSprop", "URA-L-BFGS", "L-BFGS (white-box)",
-} | OPTIONAL_METHODS
+    "URA-L-BFGS (no-es)", "URA-L-BFGS (no-ws)", "URA-L-BFGS (no-es-no-ws)",
+}
 
 
 def aggregate_trials(
@@ -118,20 +144,24 @@ def make_plot(
     x_idx: int,
     xlabel: str,
     filename: str,
+    methods: list,
+    display_label: dict | None = None,
     log_x: bool = False,
     grad_idx: int | None = None,
     plot_order: list = plot_order,
 ) -> None:
+    display_label = display_label or {}
     fig, axes = plt.subplots(1, 2, figsize=(6, 3))
     handles, labels = None, None
     for ax, prob_label in zip(axes.flatten(), plot_order):
-        for method in colors:
+        for method in methods:
             traces_list = trial_results.get(prob_label, {}).get(method, [])
             if not traces_list:
                 continue
             x_grid, median, q25, q75 = aggregate_trials(traces_list, x_idx, log_x)
             color = colors[method]
-            ax.plot(x_grid, median, label=method, color=color)
+            label = display_label.get(method, method)
+            ax.plot(x_grid, median, label=label, color=color)
             ax.fill_between(x_grid, q25, q75, color=color, alpha=0.2, linewidth=0)
             if grad_idx is not None and method in GRAD_METHODS:
                 g_grid, g_median, _, _ = aggregate_trials(traces_list, grad_idx, log_x)
@@ -164,15 +194,24 @@ def make_plot(
     print(f"saved {filename}")
 
 
-def generate_plots(dim_y: int, order: list, prefix: str) -> None:
-    """Build trial_results for `order`'s problems and render its two plots
-    (iters, fcalls) exactly as make_plot always has, just under `prefix`."""
+def generate_plots(
+    dim_y: int,
+    order: list,
+    prefix: str,
+    methods: list,
+    display_label: dict | None = None,
+) -> None:
+    """Build trial_results for `order`'s problems and `methods`, and render
+    its two plots (iters, fcalls) exactly as make_plot always has, just
+    under `prefix`."""
+    label_to_safe = {label: safe for safe, label in SAFE_TO_LABEL.items()}
     trial_results: dict[str, dict[str, list]] = {}
     missing = []
 
     for prob_label in order:
         trial_results[prob_label] = {}
-        for safe_method, label in SAFE_TO_LABEL.items():
+        for label in methods:
+            safe_method = label_to_safe[label]
             # Current runs write one file per trial (run_linear_coupling.sh
             # launches one process per trial); fall back to the older
             # single combined-file layout if no per-trial files exist.
@@ -187,8 +226,7 @@ def generate_plots(dim_y: int, order: list, prefix: str) -> None:
                 if os.path.exists(legacy_path):
                     paths = [legacy_path]
             if not paths:
-                if label not in OPTIONAL_METHODS:
-                    missing.append(pattern)
+                missing.append(pattern)
                 continue
 
             df = pd.concat((pd.read_csv(p) for p in paths), ignore_index=True)
@@ -221,12 +259,39 @@ def generate_plots(dim_y: int, order: list, prefix: str) -> None:
         return
 
     make_plot(trial_results, DIM_X, dim_y, 0, "Iterations",
-              f"{prefix}_iters_x{DIM_X}_y{dim_y}.pdf", plot_order=order)
+              f"{prefix}_iters_x{DIM_X}_y{dim_y}.pdf", methods,
+              display_label=display_label, plot_order=order)
     make_plot(trial_results, DIM_X, dim_y, 1, r"Total $f$-calls",
-              f"{prefix}_fcalls_x{DIM_X}_y{dim_y}.pdf", log_x=True, grad_idx=5,
+              f"{prefix}_fcalls_x{DIM_X}_y{dim_y}.pdf", methods,
+              display_label=display_label, log_x=True, grad_idx=5,
               plot_order=order)
 
 
-for DIM_Y in DIM_Y_LIST:
-    generate_plots(DIM_Y, plot_order, "qcoupling")
-    generate_plots(DIM_Y, plot_order_decoupled, "qdecoupled")
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Regenerate convergence plots from saved CSV data in results_data/."
+    )
+    parser.add_argument(
+        "--ablation",
+        action="store_true",
+        help=(
+            "Plot the 4 URA-L-BFGS ablation variants (labeled Full/No ES/No "
+            "WS/No ES, no WS) instead of the default 4-method baseline "
+            "comparison (URA-L-BFGS/URA-CMA-ES/CMA-ES (black-box)/L-BFGS "
+            "(white-box))."
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.ablation:
+        methods, display_label, suffix = ABLATION_METHODS, ABLATION_DISPLAY_LABEL, "_ablation"
+    else:
+        methods, display_label, suffix = BASELINE_METHODS, None, ""
+
+    for DIM_Y in DIM_Y_LIST:
+        generate_plots(DIM_Y, plot_order, f"qcoupling{suffix}", methods, display_label)
+        generate_plots(DIM_Y, plot_order_decoupled, f"qdecoupled{suffix}", methods, display_label)
+
+
+if __name__ == "__main__":
+    main()
